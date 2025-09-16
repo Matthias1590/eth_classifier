@@ -3,6 +3,14 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
+fn string_to_u128<'a, D>(deserializer: D) -> Result<u128, D::Error>
+where
+    D: Deserializer<'a>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    s.parse::<u128>().map_err(de::Error::custom)
+}
+
 fn string_to_u64<'a, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'a>,
@@ -13,12 +21,12 @@ where
 
 #[derive(Deserialize)]
 pub struct Transaction {
+    #[serde(deserialize_with = "string_to_u128")]
+    pub value: u128,
     #[serde(rename = "timeStamp", deserialize_with = "string_to_u64")]
     pub timestamp: u64,
     pub to: String,
     pub from: String,
-    #[serde(deserialize_with = "string_to_u64")]
-    pub value: u64,
 }
 
 pub struct ClientBuilder {

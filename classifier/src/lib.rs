@@ -144,14 +144,14 @@ impl WalletClassifier {
         let features = self.get_features(address).await?
             .ok_or(anyhow!("Not enough transactions to classify"))?;
 
-        let code = self.client.get_code(address).await?;
-        let has_code = code != "0x" && code != "0x0";
-        if has_code {
-            return Ok(WalletClassPrediction {
-                class: WalletClass::Contract,
-                confidence: 1.0,
-            });
-        }
+        // let code = self.client.get_code(address).await?;
+        // let has_code = code != "0x" && code != "0x0";
+        // if has_code {
+        //     return Ok(WalletClassPrediction {
+        //         class: WalletClass::Contract,
+        //         confidence: 1.0,
+        //     });
+        // }
 
         // TODO: Figure out a way to run the model in rust directly, surely theres some crate for it right?
         Python::attach(|py| {
