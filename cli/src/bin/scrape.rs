@@ -1,14 +1,9 @@
-mod etherscan;
-mod wallet_classifier;
-mod exchange_list;
-
 use std::sync::Arc;
-
-use crate::wallet_classifier::WalletClassifier;
+use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use csv::ReaderBuilder;
 
-fn get_addresses(csv_path: &str, address_column: usize) -> anyhow::Result<Vec<String>> {
+fn get_addresses(csv_path: &str, address_column: usize) -> Result<Vec<String>> {
     let mut addresses = vec![];
 
     let mut reader = ReaderBuilder::new()
@@ -25,7 +20,7 @@ fn get_addresses(csv_path: &str, address_column: usize) -> anyhow::Result<Vec<St
     Ok(addresses)
 }
 
-async fn create_csv(classifier: Arc<WalletClassifier>) -> anyhow::Result<()> {
+async fn create_csv(classifier: Arc<classifier::WalletClassifier>) -> Result<()> {
     let addresses = get_addresses("all_classified.csv", 0)?
         .into_iter()
         .collect::<Vec<_>>();
@@ -80,12 +75,10 @@ async fn create_csv(classifier: Arc<WalletClassifier>) -> anyhow::Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let etherscan_api_key = std::env::var("ETHERSCAN_API_KEY")
-        .expect("ETHERSCAN_API_KEY must be set");
-    let etherscan_client = Arc::new(etherscan::Client::new(etherscan_api_key));
+async fn main() -> Result<()> {
+    let etherscan_client = Arc::new(etherscan::ClientBuilder::new().build()?);
 
-    let classifier = Arc::new(WalletClassifier::new(Arc::clone(&etherscan_client)));
+    let classifier = Arc::new(classifier::WalletClassifier::new(Arc::clone(&etherscan_client)));
 
     create_csv(Arc::clone(&classifier)).await?;
 

@@ -1,7 +1,8 @@
-use anyhow::anyhow;
 use pyo3::prelude::*;
+use anyhow::{Result, anyhow};
 use std::{fmt::Display, sync::Arc};
-use tch::{Kind, Tensor};
+
+mod utils;
 
 pub enum WalletClass {
     Customer,
@@ -16,12 +17,8 @@ impl Display for WalletClass {
             WalletClass::Customer => write!(f, "customer"),
             WalletClass::MevBot => write!(f, "mev bot"),
             WalletClass::Exchange { hot } => {
-                if *hot {
-                    write!(f, "hot exchange")
-                } else {
-                    write!(f, "cold exchange")
-                }
-            }
+                write!(f, "{} exchange", if *hot { "hot" } else { "cold" })
+            },
             WalletClass::Contract => write!(f, "contract"),
         }
     }
@@ -32,39 +29,17 @@ pub struct WalletClassPrediction {
     pub confidence: f32,
 }
 
-fn stats_from_intervals(intervals: Vec<u64>) -> (f64, f64, f64) {
-    let t = Tensor::from_slice(&intervals.iter().map(|&x| x as f64).collect::<Vec<_>>());
-
-    let mean = t.mean(Kind::Float).double_value(&[]);
-    let std = t.std(false).double_value(&[]); // biased = population std
-    let probs = &t / t.sum(Kind::Float);
-    let entropy = (-(&probs * probs.log())).sum(Kind::Float).double_value(&[]);
-
-    (mean, std, entropy)
-}
-
-fn stats_from_values(values: Vec<f64>) -> (f64, f64, f64, f64) {
-    let t = Tensor::from_slice(&values);
-
-    let mean = t.mean(Kind::Float).double_value(&[]);
-    let median = t.median().double_value(&[]);
-    let std = t.std(false).double_value(&[]);
-    let max = t.max().double_value(&[]);
-
-    (mean, median, std, max)
-}
-
 pub struct WalletClassifier {
-    client: Arc<crate::etherscan::Client>,
+    client: Arc<etherscan::Client>,
 }
 
 impl WalletClassifier {
-    pub fn new(client: Arc<crate::etherscan::Client>) -> Self {
+    pub fn new(client: Arc<etherscan::Client>) -> Self {
         Self { client }
     }
 
     // FIXME: Use libtorch more, all these cpu loops are a waste of time
-    pub async fn get_features(&self, address: &str) -> anyhow::Result<Option<Vec<f32>>> {
+    pub async fn get_features(&self, address: &str) -> Result<Option<Vec<f32>>> {
         let address = address.to_lowercase();
 
         let txs = self.client.get_transactions(&address).await?;
@@ -72,75 +47,66 @@ impl WalletClassifier {
             return Ok(None);
         }
 
-        // FIXME: This assumes the transactions are sorted by timestamp, only true because of an implementation detail in get_transactions, add sort parameter to get_transactions
-        let start_ts = txs.last().expect("is_empty checked above")["timeStamp"]
-            .as_str()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap();
-        let end_ts = txs.first().expect("is_empty checked above")["timeStamp"]
-            .as_str()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap();
+        // FIXME: This assumes the transactions are sorted by timestamp, only true because the api returns them that way (I think), so either ensure that or sort them somewhere
+        let start_ts = txs.last().unwrap().timestamp;
+        let end_ts = txs.first().unwrap().timestamp;
         let lifetime_s = end_ts - start_ts;
         let lifetime_days = lifetime_s / (24 * 60 * 60);
 
-        // FIXME: There's no error checking here, there shouldn't be either, get_transactions should parse json more strictly and return a vector of transaction structs
         let tx_intervals = txs
             .windows(2)
             .map(|w| {
-                let end = w[0]["timeStamp"].as_str().unwrap().parse::<u64>().unwrap();
-                let start = w[1]["timeStamp"].as_str().unwrap().parse::<u64>().unwrap();
+                let end = w[0].timestamp;
+                let start = w[1].timestamp;
                 end - start
             })
             .collect::<Vec<_>>();
 
         let incoming_txs: Vec<_> = txs
             .iter()
-            .filter(|tx| tx["to"].as_str().unwrap().to_lowercase() == address)
+            .filter(|tx| tx.to.to_lowercase() == address)
             .collect();
         let outgoing_txs: Vec<_> = txs
             .iter()
-            .filter(|tx| tx["from"].as_str().unwrap().to_lowercase() == address)
+            .filter(|tx| tx.from.to_lowercase() == address)
             .collect();
 
         let from_exchanges = incoming_txs
             .iter()
             .filter(|tx| {
-                let from = tx["from"].as_str().unwrap().to_lowercase();
-                crate::exchange_list::is_exchange_owned(&from)
+                let from = tx.from.to_lowercase();
+                utils::is_exchange_owned(&from)
             })
             .count();
         let to_exchanges = outgoing_txs
             .iter()
             .filter(|tx| {
-                let to = tx["to"].as_str().unwrap().to_lowercase();
-                crate::exchange_list::is_exchange_owned(&to)
+                let to = tx.to.to_lowercase();
+                utils::is_exchange_owned(&to)
             })
             .count();
 
         let tx_values = txs
             .iter()
-            .map(|tx| tx["value"].as_str().unwrap().parse::<f64>().unwrap())
+            .map(|tx| tx.value as f64)
             .collect::<Vec<_>>();
         let ingoing_volume = incoming_txs
             .iter()
-            .map(|tx| tx["value"].as_str().unwrap().parse::<f64>().unwrap())
+            .map(|tx| tx.value as f64)
             .sum::<f64>();
         let outgoing_volume = outgoing_txs
             .iter()
-            .map(|tx| tx["value"].as_str().unwrap().parse::<f64>().unwrap())
+            .map(|tx| tx.value as f64)
             .sum::<f64>();
 
         let from_addrs = incoming_txs
             .iter()
-            .map(|tx| tx["from"].as_str().unwrap().to_lowercase())
+            .map(|tx| tx.from.to_lowercase())
             .collect::<std::collections::HashSet<_>>()
             .len();
         let to_addrs = outgoing_txs
             .iter()
-            .map(|tx| tx["to"].as_str().unwrap().to_lowercase())
+            .map(|tx| tx.to.to_lowercase())
             .collect::<std::collections::HashSet<_>>()
             .len();
         let addr_reuse = (from_addrs + to_addrs) / txs.len();
@@ -148,8 +114,8 @@ impl WalletClassifier {
         let exchange_ratio = txs.len() as f32 / (from_exchanges + to_exchanges).max(1) as f32;
         let in_out_ratio = incoming_txs.len() as f32 / outgoing_txs.len().max(1) as f32;
 
-        let (interval_mean, interval_std, _interval_entropy) = stats_from_intervals(tx_intervals);
-        let (value_mean, value_median, value_std, value_max) = stats_from_values(tx_values);
+        let (interval_mean, interval_std, _interval_entropy) = utils::stats_from_intervals(tx_intervals);
+        let (value_mean, value_median, value_std, value_max) = utils::stats_from_values(tx_values);
 
         Ok(Some(vec![
             txs.len() as f32,
@@ -174,7 +140,7 @@ impl WalletClassifier {
         ]))
     }
 
-    pub async fn classify(&self, address: &str) -> anyhow::Result<WalletClassPrediction> {
+    pub async fn classify(&self, address: &str) -> Result<WalletClassPrediction> {
         let features = self.get_features(address).await?
             .ok_or(anyhow!("Not enough transactions to classify"))?;
 
@@ -187,7 +153,7 @@ impl WalletClassifier {
             });
         }
 
-        // FIXME: Not very efficient... run the model in rust directly
+        // TODO: Figure out a way to run the model in rust directly, surely theres some crate for it right?
         Python::attach(|py| {
             let joblib = PyModule::import(py, "joblib")?;
             let np = PyModule::import(py, "numpy")?;

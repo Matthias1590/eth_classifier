@@ -1,0 +1,10 @@
+[package]
+name = "classifier"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+etherscan = { path = "../etherscan" }
+anyhow = "1.0.99"
+pyo3 = { version = "0.26.0", features = ["auto-initialize"] }
+tch = "0.20.0"
