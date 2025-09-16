@@ -15,6 +15,8 @@ address                                         class
 
 # Improvement ideas
 - Add a feature for number of interactions with contracts (like with number of interactions with exchanges).
+- Add a feature incorporating the current time (to see inactivity).
+- Add a feature that gives the model a view of trade interval entropy (humans don't trade on a predictable schedule, bots maybe every minute, and exchanges irregularly but often).
 - More training data, not only based on labeled data but also heuristics.
 - More heuristics, to, for example, detect miners/validators.
 - In-memory caching for the etherscan api.
